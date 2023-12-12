@@ -1,7 +1,8 @@
 use std::fs::File;
+use std::any::Any;
 use std::io::{self, Read, Seek, SeekFrom};
 use std::path::Path;
-use std::{str, mem};
+use std::{str, mem, vec};
 use regex::Regex; 
 use serde::Deserialize;
 
@@ -16,13 +17,69 @@ struct NumpyHeader {
 }
 
 #[derive(Debug)]
-enum NumpyData {
-    IntVec1D(Vec<i32>),
-    FloatVec1D(Vec<f64>),
-    IntVec2D(Vec<Vec<i32>>),
-    FloatVec2D(Vec<Vec<f64>>),
-    // ToDo add more dimensions
+enum NumpyType {
+    Float64(Vec<f64>),
+    Int32(Vec<i32>),
+    // Can add more types here
 }
+
+#[derive(Debug)]
+struct NumpyArray {
+    dtype: NumpyType,
+    shape: Vec<usize>,
+}
+
+impl NumpyArray {
+    fn new(header: NumpyHeader, file: &mut File, data_start_pos: usize) -> io::Result<NumpyArray> {
+        file.seek(SeekFrom::Start(data_start_pos as u64))?;
+        
+        // Get the total elements in the array
+        let total_elements: usize = header.shape.iter().product();
+
+        println!("total elements in array: {}", total_elements);
+
+        match header.descr.as_str() {
+            "<i4" => {
+                let mut buffer: Vec<i32> = Vec::with_capacity(total_elements);
+
+                for _ in 0..total_elements {
+                    let mut bytes = [0u8; 4]; //i32 is 4 bytes
+                    file.read_exact(&mut bytes).unwrap();
+                    let value = i32::from_le_bytes(bytes);
+                    buffer.push(value);
+                }
+
+                println!("This is the array: {:?}", buffer);
+
+                Ok(NumpyArray {
+                    dtype: NumpyType::Int32(buffer),
+                    shape: header.shape,
+                })
+            },
+            "<f8" => {todo!()},
+
+            _ => Err(io::Error::new(io::ErrorKind::InvalidData, "Unsupported data type")),
+        }
+        
+        //todo!()
+    }
+
+    fn to_nested_vec_i32(&self, start: usize, dimensions: &[usize]) -> Vec<Vec<i32>> {
+
+        // for only 1 dimension
+        if dimensions.len() == 1 {
+            if let NumpyType::Int32(data) = &self.dtype {
+                return vec![data[start..start + dimensions[0]].to_vec()];
+            } else {
+                panic!("Data type mismatch: Expected Int32");
+            }}
+            
+        todo!()
+        }
+    
+    }
+
+
 
 fn parse_header(header_str: &str) -> Result<NumpyHeader, serde_json::Error> {
     // Regular expressions for transformations
@@ -93,12 +150,6 @@ fn read_numpy_header<P: AsRef<Path>>(path: P) -> io::Result<(NumpyHeader, usize)
     let header_data = str::from_utf8(&header_data_bytes)
     .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "Invalid UTF-8 in header"))?;
 
-    println!("Magic string: {:?}", magic_string);
-    println!("Major version: {}", major_version);
-    println!("Minor version: {}", minor_version);
-    println!("Header lenght: {:?}", header_lenght);
-    // println!("{}", header_data);
-
     // read the numpy header data into the struct - be aware of unwrap
     let header_dict = parse_header(header_data).unwrap();
 
@@ -107,97 +158,26 @@ fn read_numpy_header<P: AsRef<Path>>(path: P) -> io::Result<(NumpyHeader, usize)
 
     // REMEMBER <i4 describes the data type of the array. < means its stored in little endian order, i stands for integer and 4 stands for the size in bytes of each element in the array
     // So 4 means each integer is stored using 4 bytes (or 32bits)
-    println!("{}", header_dict.descr);
-    println!("{}", header_dict.fortran_order);
-    println!("{:?}", header_dict.shape);
 
     Ok((header_dict, data_start_pos))
 
 }
 
-
-fn parse_vectors(header: NumpyHeader, file_path: &str, data_start_pos: usize) -> io::Result<NumpyData> {
-    let mut file = File::open(file_path)?;
-    file.seek(SeekFrom::Start(data_start_pos as u64))?;
-
-    match header.descr.as_str() {
-        "<i4" => {
-            let flat_data: Vec<i32> = read_data::<i32>(&mut file)?;
-            match header.shape.len() {
-                1 => Ok(NumpyData::IntVec1D(flat_data)),
-                2 => Ok(NumpyData::IntVec2D(reshape_vector(flat_data, &header.shape))),
-                _ => Err(io::Error::new(io::ErrorKind::Other, "Unsupported array dimension")),
-            }
-        },
-        "<f8" => {
-            let flat_data: Vec<f64> = read_data::<f64>(&mut file)?;
-            match header.shape.len() {
-                1 => Ok(NumpyData::FloatVec1D(flat_data)),
-                2 => Ok(NumpyData::FloatVec2D(reshape_vector(flat_data, &header.shape))),
-                _ => Err(io::Error::new(io::ErrorKind::Other, "Unsupported array dimension")),
-            }
-        },
-        _ => Err(io::Error::new(io::ErrorKind::Other, "Unsupported data type")),
-    }
-}
-
-fn read_data<T>(file: &mut File) -> io::Result<Vec<T>>
-where
-    T: FromLeBytes + Default,
-{
-    let mut data = Vec::new();
-    let mut buffer = vec![0u8; mem::size_of::<T>()];
-
-    while let Ok(()) = file.read_exact(&mut buffer) {
-        data.push(T::from_le_bytes(&buffer));
-    }
-
-    Ok(data)
-}
-
-fn reshape_vector<T>(flat_vec: Vec<T>, shape: &[usize]) -> Vec<Vec<T>>
-where
-    T: Clone,
-{
-    if shape.len() != 2 {
-        panic!("Currently only 2D arrays are supported");
-    }
-
-    let _rows = shape[0];
-    let cols = shape[1];
-
-    flat_vec
-        .chunks(cols)
-        .map(|chunk| chunk.to_vec())
-        .collect()
-}
-
-trait FromLeBytes {
-    fn from_le_bytes(bytes: &[u8]) -> Self;
-}
-
-impl FromLeBytes for i32 {
-    fn from_le_bytes(bytes: &[u8]) -> Self {
-        i32::from_le_bytes(bytes.try_into().expect("Invalid byte slice length"))
-    }
-}
-
-impl FromLeBytes for f64 {
-    fn from_le_bytes(bytes: &[u8]) -> Self {
-        f64::from_le_bytes(bytes.try_into().expect("Invalid byte slice length"))
-    }
-}
-
 fn main() {
 
-    let file_path = "data/array_2.npy";
+    let file_path = "data/array_3.npy";
     let (dict, siffra) = read_numpy_header(file_path).unwrap();
     println!("Start pos: {}", siffra);
     println!("info gathered from the header: {} {} {:?}", dict.descr, dict.fortran_order, dict.shape);
 
-    match parse_vectors(dict, file_path, siffra) {
-        Ok(vectors) => println!("Parsed data: {:?}", vectors),
-        Err(e) => println!("Errors parsing data: {}", e),
-    }
+    let ndarray = NumpyArray::new(dict, &mut File::open(file_path).unwrap(), siffra).unwrap();
+    println!("This is the returned nd-array {:?}", ndarray);
 
+    // Check if the data type is Int32 before calling to_nested_vec_i32
+    if let NumpyType::Int32(_) = ndarray.dtype {
+        let nested_vec = ndarray.to_nested_vec_i32(0, &ndarray.shape);
+        println!("Nested Vec (i32): {:?}", nested_vec);
+    } else {
+        println!("NumpyArray is not of type Int32");
+    }
 }
