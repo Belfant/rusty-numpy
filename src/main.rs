@@ -64,6 +64,7 @@ impl NumpyArray {
         //todo!()
     }
 
+    // Works well for 2D arrays
     fn to_nested_vec_i32(&self, start: usize, dimensions: &[usize]) -> Vec<Vec<i32>> {
 
         // for only 1 dimension
@@ -73,12 +74,63 @@ impl NumpyArray {
             } else {
                 panic!("Data type mismatch: Expected Int32");
             }}
+
+        
+        // for two dimensions
+        let mut nested_vec: Vec<Vec<i32>> = Vec::new();
+        let subarray_size: usize = dimensions[1..].iter().product();
+
+        for i in 0..dimensions[0] {
+            let sub_start = start + i * subarray_size;
+            let sub_end = sub_start + subarray_size;
+
+            if let NumpyType::Int32(data) = &self.dtype {
+                let mut sub_vec: Vec<i32> = Vec::new();
+                for j in sub_start..sub_end {
+                    sub_vec.push(data[j]);
+                }
+                nested_vec.push(sub_vec);
+            } 
             
-        todo!()
+            else {
+                panic!("Data type mismatch: Expected Int32");
+            }
+        }
+
+        nested_vec
+
         }
     
+
+    fn to_nested_vec_any_dim_i32(&self, start: usize, dimensions: &[usize]) -> Vec<Box<dyn Any>> {
+        if dimensions.is_empty() {
+            panic!("Dimensions array is empty");
+        }
+
+        // Base case: 1 or 2 dimension(s)
+        if dimensions.len() == 1 {
+            if let NumpyType::Int32(data) = &self.dtype {
+                // Here we should directly create and return Vec<i32>
+                return vec![Box::new(data[start..start + dimensions[0]].to_vec()) as Box<dyn Any>];
+            } else {
+                panic!("Data type mismatch: Expected Int32");
+            }
+        }
+
+        // The big one, Recursive case - more than one dimension
+        let subarray_size: usize = dimensions[1..].iter().product();
+        let mut nested_vec: Vec<Box<dyn Any>> = Vec::new();
+
+        for i in 0..dimensions[0] {
+            let sub_start = start + i * subarray_size;
+            nested_vec.push(Box::new(self.to_nested_vec_any_dim_i32(sub_start, &dimensions[1..])));
+        }
+
+        nested_vec
+
     }
 
+    }
 
 
 fn parse_header(header_str: &str) -> Result<NumpyHeader, serde_json::Error> {
@@ -163,21 +215,45 @@ fn read_numpy_header<P: AsRef<Path>>(path: P) -> io::Result<(NumpyHeader, usize)
 
 }
 
-fn main() {
-
-    let file_path = "data/array_3.npy";
-    let (dict, siffra) = read_numpy_header(file_path).unwrap();
-    println!("Start pos: {}", siffra);
-    println!("info gathered from the header: {} {} {:?}", dict.descr, dict.fortran_order, dict.shape);
-
-    let ndarray = NumpyArray::new(dict, &mut File::open(file_path).unwrap(), siffra).unwrap();
-    println!("This is the returned nd-array {:?}", ndarray);
-
-    // Check if the data type is Int32 before calling to_nested_vec_i32
-    if let NumpyType::Int32(_) = ndarray.dtype {
-        let nested_vec = ndarray.to_nested_vec_i32(0, &ndarray.shape);
-        println!("Nested Vec (i32): {:?}", nested_vec);
-    } else {
-        println!("NumpyArray is not of type Int32");
+fn print_nested_vec(nested_vec: &[Box<dyn Any>], depth: usize) {
+    for item in nested_vec {
+        if depth == 1 {
+            if let Some(subarray) = item.downcast_ref::<Vec<i32>>() {
+                println!("Vec<i32> at depth {}: {:?}", depth, subarray);
+            } else {
+                println!("Failed to downcast to Vec<i32> at depth {}", depth);
+            }
+        } else {
+            if let Some(subarray) = item.downcast_ref::<Vec<Box<dyn Any>>>() {
+                println!("Vec<Box<dyn Any>> at depth {}", depth);
+                print_nested_vec(subarray, depth - 1);
+            } else {
+                println!("Failed to downcast to Vec<Box<dyn Any>> at depth {}", depth);
+            }
+        }
     }
+}
+
+
+fn main() -> io::Result<()> {
+
+    let file_path = "data/array_5.npy";
+
+    // Read the header and data from the .npy file
+    let (header, data_start_pos) = read_numpy_header(file_path)?;
+    let numpy_array = NumpyArray::new(header, &mut File::open(file_path)?, data_start_pos)?;
+
+    // Check if the dtype is Int32, and call the to_nested_vec_any_dim_i32 function
+    if let NumpyType::Int32(_) = numpy_array.dtype {
+        let nested_vec = numpy_array.to_nested_vec_any_dim_i32(0, &numpy_array.shape);
+
+        // Recursively print the nested vector
+        print_nested_vec(&nested_vec, numpy_array.shape.len());
+
+    } else {
+        println!("The numpy array is not of type Int32.");
+    }
+
+    Ok(())
+
 }
