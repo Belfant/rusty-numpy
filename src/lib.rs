@@ -1,4 +1,3 @@
-use core::panic;
 use std::fs::File;
 use std::any::Any;
 use std::io::{self, Read, Seek, SeekFrom};
